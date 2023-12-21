@@ -5,11 +5,11 @@ shopt -s nullglob
 
 CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/msmtp/config"
 QUEUE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/mail.queue"
-LOG="${XDG_LOG_HOME:-$HOME/.local/log}/msmtp.log"
+LOG="${XDG_LOG_HOME:-$HOME/.local/log}/msmtpq-flush.log"
 
 # Like it or not, sometimes the wrong bash version or the wrong path
 # will bite you harder than you'd like to admit
-echo "Started on bash ${BASH_VERSION} with PATH ${PATH}" >>${LOG}
+echo "smpt flush started on bash ${BASH_VERSION} with PATH ${PATH}" >>${LOG}
 
 exec {stdout}>&1
 coproc logger {(while read line; do echo "$(date -Iseconds) $line"; done >>"$LOG";); }
@@ -23,23 +23,26 @@ lock() {
 }
 
 msg() {
-    echo "$(date -Iseconds) $1" >&$stdout
+    m="$(date -Iseconds) $*"
+    echo "$m" >&$stdout
+    echo "$m" >>${LOG}
 }
 
 # Anything to do?
 DIRS=("$QUEUE_DIR"/*.mail/)
 if [[ ${#DIRS} -eq 0 ]]; then
+    msg "No mails in $QUEUE_DIR"
     exit 0
 fi
 unset DIRS # Recompute this later as it can change (look ma, no locks!)...
 
 if [[ ! -w "$QUEUE_DIR" ]]; then
-    echo "Insufficient privileges to write to queue."
+    msg "Insufficient privileges to write to queue at $QUEUE_DIR"
     exit 1
 fi
 
 if ! lock -n -x "$QUEUE_DIR"; then
-    msg "Already running..."
+    msg "Already running... for dir  $QUEUE_DIR"
     exit 0
 fi
 
@@ -50,7 +53,7 @@ else
 fi
 
 if ! ${PING} >/dev/null 2>&1; then
-    echo "Not Online"
+    msg "Not Online; aborting"
     exit 0
 fi
 
@@ -58,16 +61,16 @@ for mail in "$QUEUE_DIR"/*.mail/; do
     id="$(basename "$mail")"
     prefix="mail [ $id ]"
     if [[ ! -r "$mail/msmtp_flags" ]]; then
-        echo "$prefix failed to send message; missing flags"
+        msg "$prefix failed to send message; missing flags"
         continue
     fi
     if [[ ! -r "$mail/message" ]]; then
-        echo "$prefix failed to send message; missing message"
+        msg "$prefix failed to send message; missing message"
         continue
     fi
 
     if [[ ! -w "$mail" ]]; then
-        echo "$prefix failed to send message; insufficient privileges"
+        msg "$prefix failed to send message; insufficient privileges"
         continue
     fi
 
@@ -76,27 +79,26 @@ for mail in "$QUEUE_DIR"/*.mail/; do
         args="$(xargs -0  printf '"%s" '<"$mail/msmtp_flags")"
         prefix="$prefix [ ${args}]"
 
-        echo "$prefix sending"
-
         # -X will swallow the next argument with msmtp version 1.8.24 on macos
         # so it is dropped and we use the regular logfile
         # Also, the missing xargs --arg-file .
         command="msmtp -C "$CONFIG" ${args}"
+        msg "$prefix handing over to msmtp cmd:  ${command}"
         eval ${command}  < "$mail/message"
     else
         prefix="$prefix [ $(xargs -0 -a "$mail/msmtp_flags" printf '%s ')]"
 
-        echo "$prefix sending"
+        msg "$prefix handing over to msmtp"
         xargs -0 -a "$mail/msmtp_flags" msmtp -C "$CONFIG" -X - < "$mail/message"
     fi
 
     ret="$?"
     if [[ ! "$ret" -eq 0 ]] ; then
-        echo "$prefix faild to send; msmtp rc = $ret"
+        msg "$prefix failed to send; msmtp rc = $ret"
         continue
     fi
     if ! rm -rf "$mail"; then
-        echo "$prefix sent but not purged from queue!?"
+        msg "$prefix sent but not purged from queue!?"
     fi
 done
 
